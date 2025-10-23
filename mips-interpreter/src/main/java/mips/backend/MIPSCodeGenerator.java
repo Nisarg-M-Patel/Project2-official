@@ -15,15 +15,14 @@ public class MIPSCodeGenerator {
     }
     
     public void generate() {
-        if (useGreedy) {
-            output.println("# Greedy allocation not yet implemented");
-            MIPSNaiveAllocator allocator = new MIPSNaiveAllocator(output);
-            allocator.generateProgram(program);
-        } else {
-            MIPSNaiveAllocator allocator = new MIPSNaiveAllocator(output);
-            allocator.generateProgram(program);
-        }
+    if (useGreedy) {
+        MIPSGreedyAllocator allocator = new MIPSGreedyAllocator(output);
+        allocator.generateProgram(program);
+    } else {
+        MIPSNaiveAllocator allocator = new MIPSNaiveAllocator(output);
+        allocator.generateProgram(program);
     }
+}
     
     public static void main(String[] args) throws Exception {
         if (args.length < 2) {

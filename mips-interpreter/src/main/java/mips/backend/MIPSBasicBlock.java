@@ -15,6 +15,10 @@ public class MIPSBasicBlock {
     private Set<String> liveIn;
     private Set<String> liveOut;
     
+    // Store all blocks created during CFG construction
+    private static List<MIPSBasicBlock> allBlocks;
+    private static Map<String, MIPSBasicBlock> labelToBlock;
+    
     public MIPSBasicBlock() {
         this.instructions = new ArrayList<>();
         this.successors = new ArrayList<>();
@@ -26,41 +30,45 @@ public class MIPSBasicBlock {
     
     public MIPSBasicBlock(IRFunction func, Map<Integer, MIPSInstructionWrapper> defMap) {
         this();
+        allBlocks = new ArrayList<>();
+        labelToBlock = new HashMap<>();
         buildCFG(func, defMap);
     }
     
     private void buildCFG(IRFunction func, Map<Integer, MIPSInstructionWrapper> defMap) {
-        List<MIPSBasicBlock> blocks = new ArrayList<>();
-        MIPSBasicBlock currentBlock = new MIPSBasicBlock();
-        blocks.add(currentBlock);
-        
-        Map<String, MIPSBasicBlock> labelToBlock = new HashMap<>();
+        // Find all leaders (start of basic blocks)
         Set<Integer> leaders = new HashSet<>();
+        leaders.add(0); // First instruction is always a leader
         
-        leaders.add(0);
         for (int i = 0; i < func.instructions.size(); i++) {
             IRInstruction instr = func.instructions.get(i);
-            if (instr.opCode == IRInstruction.OpCode.LABEL) {
-                leaders.add(i);
-            }
+            
+            // Instruction after branch/jump is a leader
             if (isBranchOrJump(instr) && i + 1 < func.instructions.size()) {
                 leaders.add(i + 1);
             }
+            
+            // Label instruction is a leader
+            if (instr.opCode == IRInstruction.OpCode.LABEL) {
+                leaders.add(i);
+            }
         }
         
+        // Create blocks from leaders
         List<Integer> sortedLeaders = new ArrayList<>(leaders);
         Collections.sort(sortedLeaders);
         
-        blocks.clear();
         for (int i = 0; i < sortedLeaders.size(); i++) {
             MIPSBasicBlock block = new MIPSBasicBlock();
             int start = sortedLeaders.get(i);
             int end = (i + 1 < sortedLeaders.size()) ? sortedLeaders.get(i + 1) : func.instructions.size();
             
+            // Add instructions to block
             for (int j = start; j < end; j++) {
                 IRInstruction instr = func.instructions.get(j);
                 block.instructions.add(instr);
                 
+                // Map labels to blocks
                 if (instr.opCode == IRInstruction.OpCode.LABEL) {
                     String labelName = ((IRLabelOperand)instr.operands[0]).getName();
                     labelToBlock.put(labelName, block);
@@ -70,18 +78,25 @@ public class MIPSBasicBlock {
             if (!block.instructions.isEmpty()) {
                 block.startLine = block.instructions.get(0).irLineNumber;
                 block.endLine = block.instructions.get(block.instructions.size() - 1).irLineNumber;
-                blocks.add(block);
+                allBlocks.add(block);
             }
         }
         
-        for (int i = 0; i < blocks.size(); i++) {
-            MIPSBasicBlock block = blocks.get(i);
+        // Link blocks (add successors/predecessors)
+        for (int i = 0; i < allBlocks.size(); i++) {
+            MIPSBasicBlock block = allBlocks.get(i);
             if (block.instructions.isEmpty()) continue;
             
             IRInstruction lastInstr = block.instructions.get(block.instructions.size() - 1);
             
+            // Handle branches/gotos
             if (lastInstr.opCode == IRInstruction.OpCode.GOTO ||
-                lastInstr.opCode.toString().startsWith("BR")) {
+                lastInstr.opCode == IRInstruction.OpCode.BREQ ||
+                lastInstr.opCode == IRInstruction.OpCode.BRNEQ ||
+                lastInstr.opCode == IRInstruction.OpCode.BRLT ||
+                lastInstr.opCode == IRInstruction.OpCode.BRGT ||
+                lastInstr.opCode == IRInstruction.OpCode.BRGEQ) {
+                
                 String label = ((IRLabelOperand)lastInstr.operands[0]).getName();
                 MIPSBasicBlock target = labelToBlock.get(label);
                 if (target != null) {
@@ -90,38 +105,30 @@ public class MIPSBasicBlock {
                 }
             }
             
+            // Fall-through to next block (unless it's a goto or return)
             if (lastInstr.opCode != IRInstruction.OpCode.GOTO && 
                 lastInstr.opCode != IRInstruction.OpCode.RETURN &&
-                i < blocks.size() - 1) {
-                block.successors.add(blocks.get(i + 1));
-                blocks.get(i + 1).predecessors.add(block);
+                i < allBlocks.size() - 1) {
+                MIPSBasicBlock nextBlock = allBlocks.get(i + 1);
+                block.successors.add(nextBlock);
+                nextBlock.predecessors.add(block);
             }
         }
         
-        if (!blocks.isEmpty()) {
-            this.instructions = blocks.get(0).instructions;
-            this.successors = blocks.get(0).successors;
-            this.predecessors = blocks.get(0).predecessors;
-            this.startLine = blocks.get(0).startLine;
-            this.endLine = blocks.get(0).endLine;
-            this.inSet = blocks.get(0).inSet;
+        // Copy first block's data to this instance (head)
+        if (!allBlocks.isEmpty()) {
+            MIPSBasicBlock firstBlock = allBlocks.get(0);
+            this.instructions = firstBlock.instructions;
+            this.successors = firstBlock.successors;
+            this.predecessors = firstBlock.predecessors;
+            this.startLine = firstBlock.startLine;
+            this.endLine = firstBlock.endLine;
+            this.inSet = firstBlock.inSet;
         }
     }
     
     public List<MIPSBasicBlock> getBlockList() {
-        List<MIPSBasicBlock> result = new ArrayList<>();
-        Set<MIPSBasicBlock> visited = new HashSet<>();
-        collectBlocks(this, result, visited);
-        return result;
-    }
-    
-    private void collectBlocks(MIPSBasicBlock block, List<MIPSBasicBlock> result, Set<MIPSBasicBlock> visited) {
-        if (visited.contains(block)) return;
-        visited.add(block);
-        result.add(block);
-        for (MIPSBasicBlock succ : block.successors) {
-            collectBlocks(succ, result, visited);
-        }
+        return new ArrayList<>(allBlocks);
     }
     
     public Set<String> computeLiveOut() {
