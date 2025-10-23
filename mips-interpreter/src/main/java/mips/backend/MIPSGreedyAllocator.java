@@ -36,9 +36,6 @@ public class MIPSGreedyAllocator {
     }
     
     private void generateFunction(IRFunction func) {
-        // Build basic blocks
-        List<BasicBlock> blocks = buildBasicBlocks(func);
-        
         Map<String, Integer> stackOffsets = new HashMap<>();
         Map<String, String> labelMap = new HashMap<>();
         String funcPrefix = func.name + "_";
@@ -108,9 +105,9 @@ public class MIPSGreedyAllocator {
             }
         }
         
-        // Generate code for each block
-        for (BasicBlock block : blocks) {
-            generateBlock(block, stackOffsets, labelMap);
+        // Generate instructions
+        for (IRInstruction instr : func.instructions) {
+            generateInstruction(func, instr, stackOffsets, labelMap);
         }
         
         // Function epilogue
@@ -121,85 +118,16 @@ public class MIPSGreedyAllocator {
         output.println("    addi $sp, $sp, 4");
     }
     
-    private void generateBlock(BasicBlock block, Map<String, Integer> stackOffsets, 
-                              Map<String, String> labelMap) {
-        // Allocate registers for variables in this block
-        Map<String, String> regAlloc = allocateRegistersForBlock(block);
-        
-        // Track which variables are currently in their allocated registers
-        Set<String> inRegister = new HashSet<>();
-        
-        // Generate instructions
-        for (IRInstruction instr : block.instructions) {
-            generateInstruction(instr, stackOffsets, labelMap, regAlloc, inRegister);
-        }
-        
-        // Store any variables still in registers at end of block
-        // (only if block doesn't end with control transfer)
-        if (!block.instructions.isEmpty()) {
-            IRInstruction lastInstr = block.instructions.get(block.instructions.size() - 1);
-            if (!endsWithControlTransfer(lastInstr)) {
-                for (String var : inRegister) {
-                    String reg = regAlloc.get(var);
-                    if (stackOffsets.containsKey(var)) {
-                        output.println("    sw " + reg + ", -" + stackOffsets.get(var) + "($fp)");
-                    }
-                }
-            }
-        }
-    }
-    
-    private boolean endsWithControlTransfer(IRInstruction instr) {
-        IRInstruction.OpCode op = instr.opCode;
-        return op == IRInstruction.OpCode.GOTO ||
-               op == IRInstruction.OpCode.RETURN ||
-               op == IRInstruction.OpCode.BREQ ||
-               op == IRInstruction.OpCode.BRNEQ ||
-               op == IRInstruction.OpCode.BRLT ||
-               op == IRInstruction.OpCode.BRGT ||
-               op == IRInstruction.OpCode.BRGEQ;
-    }
-    
-    private Map<String, String> allocateRegistersForBlock(BasicBlock block) {
-        // Count uses of each variable in the block
-        Map<String, Integer> useCounts = new HashMap<>();
-        
-        for (IRInstruction instr : block.instructions) {
-            for (IROperand op : instr.operands) {
-                if (op instanceof IRVariableOperand) {
-                    String var = op.toString();
-                    useCounts.put(var, useCounts.getOrDefault(var, 0) + 1);
-                }
-            }
-        }
-        
-        // Sort by use count (most used first)
-        List<Map.Entry<String, Integer>> sorted = new ArrayList<>(useCounts.entrySet());
-        sorted.sort((a, b) -> b.getValue().compareTo(a.getValue()));
-        
-        // Allocate top 8 to registers
-        String[] regs = {"$t0", "$t1", "$t2", "$t3", "$t4", "$t5", "$t6", "$t7"};
-        Map<String, String> allocation = new HashMap<>();
-        
-        for (int i = 0; i < Math.min(sorted.size(), regs.length); i++) {
-            allocation.put(sorted.get(i).getKey(), regs[i]);
-        }
-        
-        return allocation;
-    }
-    
-    private void generateInstruction(IRInstruction instr, Map<String, Integer> stackOffsets,
-                                    Map<String, String> labelMap, Map<String, String> regAlloc,
-                                    Set<String> inRegister) {
+    private void generateInstruction(IRFunction func, IRInstruction instr, 
+                                     Map<String, Integer> stackOffsets, 
+                                     Map<String, String> labelMap) {
         switch (instr.opCode) {
             case LABEL:
                 String originalLabel = ((IRLabelOperand)instr.operands[0]).getName();
                 output.println(labelMap.get(originalLabel) + ":");
-                // Clear inRegister set because we might jump here from anywhere
-                inRegister.clear();
                 break;
             case ASSIGN:
-                genAssign(instr, stackOffsets, regAlloc, inRegister);
+                generateAssign(instr, stackOffsets);
                 break;
             case ADD:
             case SUB:
@@ -207,7 +135,7 @@ public class MIPSGreedyAllocator {
             case DIV:
             case AND:
             case OR:
-                genBinaryOp(instr, stackOffsets, regAlloc, inRegister);
+                generateBinaryOp(instr, stackOffsets);
                 break;
             case GOTO:
                 String gotoLabel = ((IRLabelOperand)instr.operands[0]).getName();
@@ -218,133 +146,99 @@ public class MIPSGreedyAllocator {
             case BRLT:
             case BRGT:
             case BRGEQ:
-                genBranch(instr, stackOffsets, labelMap, regAlloc, inRegister);
+                generateBranch(instr, stackOffsets, labelMap);
                 break;
             case CALL:
             case CALLR:
-                genCall(instr, stackOffsets, regAlloc, inRegister);
+                generateCall(instr, stackOffsets);
                 break;
             case RETURN:
-                genReturn(instr, stackOffsets, regAlloc, inRegister);
+                generateReturn(instr, stackOffsets);
                 break;
             case ARRAY_LOAD:
-                genArrayLoad(instr, stackOffsets, regAlloc, inRegister);
+                generateArrayLoad(instr, stackOffsets);
                 break;
             case ARRAY_STORE:
-                genArrayStore(instr, stackOffsets, regAlloc, inRegister);
+                generateArrayStore(instr, stackOffsets);
                 break;
         }
     }
     
-    // Helper: Get variable into a register, loading if necessary
-    private String ensureInRegister(String var, Map<String, String> regAlloc, 
-                                   Map<String, Integer> stackOffsets, 
-                                   Set<String> inRegister, String tempReg) {
-        if (isNumeric(var)) {
-            output.println("    li " + tempReg + ", " + var);
-            return tempReg;
-        }
+    private void generateAssign(IRInstruction instr, Map<String, Integer> stackOffsets) {
+        IROperand dest = instr.operands[0];
+        IROperand src = instr.operands[1];
         
-        String reg = regAlloc.get(var);
-        if (reg != null) {
-            // Variable has an allocated register
-            if (!inRegister.contains(var)) {
-                // Need to load it
-                output.println("    lw " + reg + ", -" + stackOffsets.get(var) + "($fp)");
-                inRegister.add(var);
-            }
-            return reg;
+        String destName = dest.toString();
+        int destOff = stackOffsets.get(destName);
+        String srcValue = src.toString();
+        
+        if (isNumeric(srcValue)) {
+            output.println("    li $t1, " + srcValue);
         } else {
-            // No allocated register - use temp and load each time (naive behavior)
-            output.println("    lw " + tempReg + ", -" + stackOffsets.get(var) + "($fp)");
-            return tempReg;
+            int srcOff = stackOffsets.get(srcValue);
+            output.println("    lw $t1, -" + srcOff + "($fp)");
         }
+        output.println("    sw $t1, -" + destOff + "($fp)");
     }
     
-    private void genAssign(IRInstruction instr, Map<String, Integer> stackOffsets,
-                          Map<String, String> regAlloc, Set<String> inRegister) {
-        String dest = instr.operands[0].toString();
-        String src = instr.operands[1].toString();
-        
-        String destReg = regAlloc.get(dest);
-        
-        if (destReg != null) {
-            // Destination has allocated register
-            if (isNumeric(src)) {
-                output.println("    li " + destReg + ", " + src);
-            } else {
-                String srcReg = ensureInRegister(src, regAlloc, stackOffsets, inRegister, "$t8");
-                if (!destReg.equals(srcReg)) {
-                    output.println("    move " + destReg + ", " + srcReg);
-                }
-            }
-            inRegister.add(dest);
-        } else {
-            // Destination not allocated - store immediately (naive behavior)
-            if (isNumeric(src)) {
-                output.println("    li $t9, " + src);
-            } else {
-                String srcReg = ensureInRegister(src, regAlloc, stackOffsets, inRegister, "$t8");
-                output.println("    move $t9, " + srcReg);
-            }
-            output.println("    sw $t9, -" + stackOffsets.get(dest) + "($fp)");
-        }
-    }
-    
-    private void genBinaryOp(IRInstruction instr, Map<String, Integer> stackOffsets,
-                            Map<String, String> regAlloc, Set<String> inRegister) {
-        String dest = instr.operands[0].toString();
+    private void generateBinaryOp(IRInstruction instr, Map<String, Integer> stackOffsets) {
+        String res = instr.operands[0].toString();
+        int resOff = stackOffsets.get(res);
         String op1 = instr.operands[1].toString();
+        int op1Off = stackOffsets.get(op1);
         String op2 = instr.operands[2].toString();
         
-        String destReg = regAlloc.get(dest);
+        output.println("    lw $t1, -" + op1Off + "($fp)");
         
-        // Get operands into registers
-        String op1Reg = ensureInRegister(op1, regAlloc, stackOffsets, inRegister, "$t8");
-        String op2Reg = ensureInRegister(op2, regAlloc, stackOffsets, inRegister, "$t9");
-        
-        if (destReg != null) {
-            // Destination has allocated register
-            String mipsOp = getMIPSOp(instr.opCode);
-            output.println("    " + mipsOp + " " + destReg + ", " + op1Reg + ", " + op2Reg);
-            inRegister.add(dest);
+        if (isNumeric(op2)) {
+            output.println("    li $t2, " + op2);
         } else {
-            // Destination not allocated - store immediately
-            String mipsOp = getMIPSOp(instr.opCode);
-            output.println("    " + mipsOp + " $t7, " + op1Reg + ", " + op2Reg);
-            output.println("    sw $t7, -" + stackOffsets.get(dest) + "($fp)");
+            int op2Off = stackOffsets.get(op2);
+            output.println("    lw $t2, -" + op2Off + "($fp)");
         }
+        
+        String mipsOp = getMIPSOp(instr.opCode);
+        output.println("    " + mipsOp + " $t0, $t1, $t2");
+        output.println("    sw $t0, -" + resOff + "($fp)");
     }
     
-    private void genBranch(IRInstruction instr, Map<String, Integer> stackOffsets,
-                          Map<String, String> labelMap, Map<String, String> regAlloc,
-                          Set<String> inRegister) {
+    private void generateBranch(IRInstruction instr, Map<String, Integer> stackOffsets, 
+                                Map<String, String> labelMap) {
         String lbl = instr.operands[0].toString();
         String cmp1 = instr.operands[1].toString();
         String cmp2 = instr.operands[2].toString();
         
-        String cmp1Reg = ensureInRegister(cmp1, regAlloc, stackOffsets, inRegister, "$t8");
-        String cmp2Reg = ensureInRegister(cmp2, regAlloc, stackOffsets, inRegister, "$t9");
+        if (isNumeric(cmp1)) {
+            output.println("    li $t0, " + cmp1);
+        } else {
+            int cmp1Off = stackOffsets.get(cmp1);
+            output.println("    lw $t0, -" + cmp1Off + "($fp)");
+        }
+        
+        if (isNumeric(cmp2)) {
+            output.println("    li $t1, " + cmp2);
+        } else {
+            int cmp2Off = stackOffsets.get(cmp2);
+            output.println("    lw $t1, -" + cmp2Off + "($fp)");
+        }
         
         String branchOp = getMIPSBranch(instr.opCode);
-        output.println("    " + branchOp + " " + cmp1Reg + ", " + cmp2Reg + ", " + labelMap.get(lbl));
+        output.println("    " + branchOp + " $t0, $t1, " + labelMap.get(lbl));
     }
     
-    private void genReturn(IRInstruction instr, Map<String, Integer> stackOffsets,
-                          Map<String, String> regAlloc, Set<String> inRegister) {
+    private void generateReturn(IRInstruction instr, Map<String, Integer> stackOffsets) {
         String retValue = instr.operands[0].toString();
         
         if (isNumeric(retValue)) {
             output.println("    li $v0, " + retValue);
         } else {
-            String retReg = ensureInRegister(retValue, regAlloc, stackOffsets, inRegister, "$t8");
-            output.println("    move $v0, " + retReg);
+            int retOff = stackOffsets.get(retValue);
+            output.println("    lw $v0, -" + retOff + "($fp)");
         }
         output.println("    jr $ra");
     }
     
-    private void genCall(IRInstruction instr, Map<String, Integer> stackOffsets,
-                        Map<String, String> regAlloc, Set<String> inRegister) {
+    private void generateCall(IRInstruction instr, Map<String, Integer> stackOffsets) {
         boolean isCallr = instr.opCode == IRInstruction.OpCode.CALLR;
         String dest = isCallr ? instr.operands[0].toString() : null;
         String funcName = isCallr ? ((IRFunctionOperand)instr.operands[1]).getName() 
@@ -361,28 +255,39 @@ public class MIPSGreedyAllocator {
             output.println("    li $v0, 5");
             output.println("    syscall");
             if (dest != null) {
-                String destReg = regAlloc.get(dest);
-                if (destReg != null) {
-                    output.println("    move " + destReg + ", $v0");
-                    inRegister.add(dest);
-                } else {
-                    output.println("    sw $v0, -" + stackOffsets.get(dest) + "($fp)");
-                }
+                output.println("    move $t0, $v0");
+                output.println("    sw $t0, -" + stackOffsets.get(dest) + "($fp)");
+            }
+            return;
+        }
+        
+        if (funcName.equals("getc")) {
+            output.println("    li $v0, 12");
+            output.println("    syscall");
+            if (dest != null) {
+                output.println("    move $t0, $v0");
+                output.println("    sw $t0, -" + stackOffsets.get(dest) + "($fp)");
             }
             return;
         }
         
         if (funcName.equals("puti")) {
-            String argReg = ensureInRegister(args.get(0), regAlloc, stackOffsets, inRegister, "$t8");
-            output.println("    move $a0, " + argReg);
+            if (isNumeric(args.get(0))) {
+                output.println("    li $a0, " + args.get(0));
+            } else {
+                output.println("    lw $a0, -" + stackOffsets.get(args.get(0)) + "($fp)");
+            }
             output.println("    li $v0, 1");
             output.println("    syscall");
             return;
         }
         
         if (funcName.equals("putc")) {
-            String argReg = ensureInRegister(args.get(0), regAlloc, stackOffsets, inRegister, "$t8");
-            output.println("    move $a0, " + argReg);
+            if (isNumeric(args.get(0))) {
+                output.println("    li $a0, " + args.get(0));
+            } else {
+                output.println("    lw $a0, -" + stackOffsets.get(args.get(0)) + "($fp)");
+            }
             output.println("    li $v0, 11");
             output.println("    syscall");
             return;
@@ -391,13 +296,22 @@ public class MIPSGreedyAllocator {
         // Regular function call
         int stackArgOffset = 0;
         for (int i = 0; i < args.size(); i++) {
+            Integer offset = stackOffsets.getOrDefault(args.get(i), null);
             if (i < 4) {
-                String argReg = ensureInRegister(args.get(i), regAlloc, stackOffsets, inRegister, "$t8");
-                output.println("    move $a" + i + ", " + argReg);
+                if (offset == null) {
+                    output.println("    li $a" + i + ", " + args.get(i));
+                } else {
+                    output.println("    lw $a" + i + ", -" + offset + "($fp)");
+                }
             } else {
-                String argReg = ensureInRegister(args.get(i), regAlloc, stackOffsets, inRegister, "$t8");
                 int stackOffset = (i - 3) * 4;
-                output.println("    sw " + argReg + ", -" + stackOffset + "($sp)");
+                if (offset == null) {
+                    output.println("    li $t0, " + args.get(i));
+                    output.println("    sw $t0, -" + stackOffset + "($sp)");
+                } else {
+                    output.println("    lw $t0, -" + offset + "($fp)");
+                    output.println("    sw $t0, -" + stackOffset + "($sp)");
+                }
                 stackArgOffset += 4;
             }
         }
@@ -408,17 +322,9 @@ public class MIPSGreedyAllocator {
         
         output.println("    jal " + funcName);
         
-        // After call, registers may be clobbered - clear tracking
-        inRegister.clear();
-        
         if (dest != null) {
-            String destReg = regAlloc.get(dest);
-            if (destReg != null) {
-                output.println("    move " + destReg + ", $v0");
-                inRegister.add(dest);
-            } else {
-                output.println("    sw $v0, -" + stackOffsets.get(dest) + "($fp)");
-            }
+            output.println("    move $t0, $v0");
+            output.println("    sw $t0, -" + stackOffsets.get(dest) + "($fp)");
         }
         
         if (stackArgOffset > 0) {
@@ -426,43 +332,52 @@ public class MIPSGreedyAllocator {
         }
     }
     
-    private void genArrayLoad(IRInstruction instr, Map<String, Integer> stackOffsets,
-                             Map<String, String> regAlloc, Set<String> inRegister) {
-        String dest = instr.operands[0].toString();
-        String arr = instr.operands[1].toString();
-        String idx = instr.operands[2].toString();
+    private void generateArrayLoad(IRInstruction instr, Map<String, Integer> stackOffsets) {
+        String loadDest = instr.operands[0].toString();
+        int arrDestOff = stackOffsets.get(loadDest);
+        String loadArr = instr.operands[1].toString();
+        int arrAddrOff = stackOffsets.get(loadArr);
+        String loadIdx = instr.operands[2].toString();
         
-        String idxReg = ensureInRegister(idx, regAlloc, stackOffsets, inRegister, "$t8");
-        output.println("    sll $t9, " + idxReg + ", 2");
-        output.println("    lw $t8, -" + stackOffsets.get(arr) + "($fp)");
-        output.println("    add $t9, $t9, $t8");
-        
-        String destReg = regAlloc.get(dest);
-        if (destReg != null) {
-            output.println("    lw " + destReg + ", 0($t9)");
-            inRegister.add(dest);
+        if (isNumeric(loadIdx)) {
+            output.println("    li $t2, " + loadIdx);
         } else {
-            output.println("    lw $t8, 0($t9)");
-            output.println("    sw $t8, -" + stackOffsets.get(dest) + "($fp)");
+            int loadIdxOff = stackOffsets.get(loadIdx);
+            output.println("    lw $t2, -" + loadIdxOff + "($fp)");
         }
+        output.println("    sll $t2, $t2, 2");
+        output.println("    lw $t1, -" + arrAddrOff + "($fp)");
+        output.println("    add $t2, $t2, $t1");
+        output.println("    lw $t1, 0($t2)");
+        output.println("    sw $t1, -" + arrDestOff + "($fp)");
     }
     
-    private void genArrayStore(IRInstruction instr, Map<String, Integer> stackOffsets,
-                              Map<String, String> regAlloc, Set<String> inRegister) {
+    private void generateArrayStore(IRInstruction instr, Map<String, Integer> stackOffsets) {
         String val = instr.operands[0].toString();
         String arr = instr.operands[1].toString();
-        String idx = instr.operands[2].toString();
+        int arrAddrOff = stackOffsets.get(arr);
+        String index = instr.operands[2].toString();
         
-        String idxReg = ensureInRegister(idx, regAlloc, stackOffsets, inRegister, "$t8");
-        String valReg = ensureInRegister(val, regAlloc, stackOffsets, inRegister, "$t9");
+        if (isNumeric(index)) {
+            output.println("    li $t2, " + index);
+        } else {
+            int idxOff = stackOffsets.get(index);
+            output.println("    lw $t2, -" + idxOff + "($fp)");
+        }
         
-        output.println("    lw $t7, -" + stackOffsets.get(arr) + "($fp)");
-        output.println("    sll $t6, " + idxReg + ", 2");
-        output.println("    add $t7, $t6, $t7");
-        output.println("    sw " + valReg + ", 0($t7)");
+        if (isNumeric(val)) {
+            output.println("    li $t0, " + val);
+        } else {
+            int valOff = stackOffsets.get(val);
+            output.println("    lw $t0, -" + valOff + "($fp)");
+        }
+        
+        output.println("    lw $t1, -" + arrAddrOff + "($fp)");
+        output.println("    sll $t2, $t2, 2");
+        output.println("    add $t1, $t2, $t1");
+        output.println("    sw $t0, 0($t1)");
     }
     
-    // Helper methods
     private String getMIPSOp(IRInstruction.OpCode opCode) {
         switch (opCode) {
             case ADD: return "add";
@@ -488,58 +403,5 @@ public class MIPSGreedyAllocator {
     
     private boolean isNumeric(String str) {
         return str.matches("-?\\d+");
-    }
-    
-    // Basic block construction
-    private List<BasicBlock> buildBasicBlocks(IRFunction func) {
-        List<BasicBlock> blocks = new ArrayList<>();
-        Set<Integer> leaders = new HashSet<>();
-        
-        leaders.add(0);
-        
-        for (int i = 0; i < func.instructions.size(); i++) {
-            IRInstruction instr = func.instructions.get(i);
-            
-            if (instr.opCode == IRInstruction.OpCode.LABEL) {
-                leaders.add(i);
-            }
-            
-            if (isBranchOrJump(instr) && i + 1 < func.instructions.size()) {
-                leaders.add(i + 1);
-            }
-        }
-        
-        List<Integer> sortedLeaders = new ArrayList<>(leaders);
-        Collections.sort(sortedLeaders);
-        
-        for (int i = 0; i < sortedLeaders.size(); i++) {
-            BasicBlock block = new BasicBlock();
-            int start = sortedLeaders.get(i);
-            int end = (i + 1 < sortedLeaders.size()) ? sortedLeaders.get(i + 1) : func.instructions.size();
-            
-            for (int j = start; j < end; j++) {
-                block.instructions.add(func.instructions.get(j));
-            }
-            
-            if (!block.instructions.isEmpty()) {
-                blocks.add(block);
-            }
-        }
-        
-        return blocks;
-    }
-    
-    private boolean isBranchOrJump(IRInstruction instr) {
-        IRInstruction.OpCode op = instr.opCode;
-        return op == IRInstruction.OpCode.GOTO ||
-               op == IRInstruction.OpCode.BREQ ||
-               op == IRInstruction.OpCode.BRNEQ ||
-               op == IRInstruction.OpCode.BRLT ||
-               op == IRInstruction.OpCode.BRGT ||
-               op == IRInstruction.OpCode.BRGEQ;
-    }
-    
-    private static class BasicBlock {
-        List<IRInstruction> instructions = new ArrayList<>();
     }
 }
