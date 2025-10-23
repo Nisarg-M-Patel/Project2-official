@@ -74,6 +74,7 @@ main_loop1:
     j main_loop1
 main_exit1:
 main_return:
+main_epilogue:
     lw   $ra, 0($sp)
     addi $sp, $sp, 4
     addi $sp, $sp, 16
@@ -188,6 +189,7 @@ quicksort_exit0:
     lw $a2, -12($fp)
     jal quicksort
 quicksort_end:
+quicksort_epilogue:
     lw   $ra, 0($sp)
     addi $sp, $sp, 4
     addi $sp, $sp, 44

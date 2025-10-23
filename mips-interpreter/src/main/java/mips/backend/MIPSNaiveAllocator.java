@@ -111,6 +111,7 @@ public class MIPSNaiveAllocator {
         }
         
         // Function epilogue
+        output.println(func.name + "_epilogue:");
         output.println("    lw   $ra, 0($sp)");
         output.println("    addi $sp, $sp, 4");
         output.println("    addi $sp, $sp, " + local_size);
@@ -152,14 +153,18 @@ public class MIPSNaiveAllocator {
             case CALLR:
                 generateCall(instr, stackOffsets);
                 break;
-            case RETURN:
-                generateReturn(instr, stackOffsets);
-                break;
+            // case RETURN:
+            //     generateReturn(instr, stackOffsets);
+            //     break;
             case ARRAY_LOAD:
                 generateArrayLoad(instr, stackOffsets);
                 break;
             case ARRAY_STORE:
                 generateArrayStore(instr, stackOffsets);
+                break;
+            case RETURN:
+                // Pass the function name to generateReturn
+                generateReturn(func, instr, stackOffsets); 
                 break;
         }
     }
@@ -226,7 +231,7 @@ public class MIPSNaiveAllocator {
         output.println("    " + branchOp + " $t0, $t1, " + labelMap.get(lbl));
     }
     
-    private void generateReturn(IRInstruction instr, Map<String, Integer> stackOffsets) {
+    private void generateReturn(IRFunction func, IRInstruction instr, Map<String, Integer> stackOffsets) {
         String retValue = instr.operands[0].toString();
         
         if (isNumeric(retValue)) {
@@ -235,7 +240,7 @@ public class MIPSNaiveAllocator {
             int retOff = stackOffsets.get(retValue);
             output.println("    lw $v0, -" + retOff + "($fp)");
         }
-        output.println("    jr $ra");
+        output.println("    j " + func.name + "_epilogue");
     }
     
     private void generateCall(IRInstruction instr, Map<String, Integer> stackOffsets) {
