@@ -1,41 +1,43 @@
 #!/bin/bash
 
+BUILD_DIR="build"
+
+# Detect OS and set classpath separator
+if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
+  CP_SEPARATOR=";"
+else
+  CP_SEPARATOR=":"
+fi
+
 # Clean previous build
-rm -rf build/
+rm -rf "$BUILD_DIR"
 
 # Create build directory
-mkdir -p build
+mkdir -p "$BUILD_DIR"
 
-# Compile IR parser and interpreter from src/
-echo "Compiling IR classes..."
-javac -d build -cp src \
-    src/ir/datatype/*.java \
-    src/ir/operand/*.java \
-    src/ir/*.java \
-    src/IRInterpreter.java \
-    src/Demo.java
+echo "Building Java compiler backend..."
 
-# Compile MIPS interpreter (existing code)
-echo "Compiling MIPS interpreter..."
-javac -d build -cp mips-interpreter/src \
-    mips-interpreter/src/main/java/exceptions/*.java \
-    mips-interpreter/src/main/java/mips/operand/*.java \
-    mips-interpreter/src/main/java/mips/*.java
+# Compile all sources directly (no temp file)
+echo "Compiling all Java sources..."
+javac -d "$BUILD_DIR" \
+      -cp "src${CP_SEPARATOR}mips-interpreter/src${CP_SEPARATOR}$BUILD_DIR" \
+      $(find src mips-interpreter/src -type f -name "*.java")
 
-# Compile MIPS backend (new code generator)
-echo "Compiling MIPS backend..."
-javac -d build -cp src:mips-interpreter/src:build \
-    mips-interpreter/src/main/java/mips/backend/*.java
+# Check compilation result
+if [ $? -ne 0 ]; then
+    echo "Compilation failed!"
+    exit 1
+fi
 
 echo ""
-echo "Build complete. Output in build/"
+echo "Build complete! Output in $BUILD_DIR/"
 echo ""
 echo "Quick test commands:"
 echo "  # Run existing MIPS interpreter:"
-echo "  java -cp build main.java.mips.MIPSInterpreter mips-interpreter/tests/hello.s"
+echo "  java -cp $BUILD_DIR main.java.mips.MIPSInterpreter mips-interpreter/tests/hello.s"
 echo ""
 echo "  # Generate MIPS code (naive):"
 echo "  ./run.sh public_test_cases/quicksort/quicksort.ir --naive"
 echo ""
 echo "  # Test generated code:"
-echo "  java -cp build main.java.mips.MIPSInterpreter out.s < public_test_cases/quicksort/0.in"
+echo "  java -cp $BUILD_DIR main.java.mips.MIPSInterpreter out.s < public_test_cases/quicksort/0.in"
